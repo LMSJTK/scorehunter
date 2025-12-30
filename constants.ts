@@ -38,6 +38,7 @@ export const ERAS: Record<EraId, EraConfig> = {
       hashMarks: false,
       otEnabled: false,
       kickoffLine: 40,
+      xpLine: 2,
       fumbleRate: 0.04,
       interceptionRate: 0.15,
       incompletionPenalty: true
@@ -55,6 +56,7 @@ export const ERAS: Record<EraId, EraConfig> = {
       hashMarks: false,
       otEnabled: false,
       kickoffLine: 40,
+      xpLine: 2,
       fumbleRate: 0.035, // High due to fatigue
       interceptionRate: 0.08,
       incompletionPenalty: false
@@ -72,6 +74,7 @@ export const ERAS: Record<EraId, EraConfig> = {
       hashMarks: true,
       otEnabled: false,
       kickoffLine: 40,
+      xpLine: 2,
       fumbleRate: 0.025,
       interceptionRate: 0.07,
       incompletionPenalty: false
@@ -89,6 +92,7 @@ export const ERAS: Record<EraId, EraConfig> = {
       hashMarks: true,
       otEnabled: true, // Added 1974, assume active for era simplicity
       kickoffLine: 40,
+      xpLine: 2,
       fumbleRate: 0.02,
       interceptionRate: 0.05,
       incompletionPenalty: false
@@ -106,6 +110,7 @@ export const ERAS: Record<EraId, EraConfig> = {
       hashMarks: true,
       otEnabled: true,
       kickoffLine: 35,
+      xpLine: 2,
       fumbleRate: 0.015,
       interceptionRate: 0.035,
       incompletionPenalty: false
@@ -123,6 +128,7 @@ export const ERAS: Record<EraId, EraConfig> = {
       hashMarks: true,
       otEnabled: true,
       kickoffLine: 30,
+      xpLine: 2,
       fumbleRate: 0.012,
       interceptionRate: 0.028,
       incompletionPenalty: false
@@ -140,6 +146,7 @@ export const ERAS: Record<EraId, EraConfig> = {
       hashMarks: true,
       otEnabled: true,
       kickoffLine: 35,
+      xpLine: 15, // Longer XP like modern NFL
       fumbleRate: 0.01,
       interceptionRate: 0.02,
       incompletionPenalty: false

@@ -12,9 +12,10 @@ export const initializeGame = (eraId: EraId, homeTeam: string, awayTeam: string)
   return {
     isPlaying: true,
     isGameOver: false,
-    isKickoff: true, // Start game with a kickoff
+    isKickoff: true,
+    isPointAfter: false,
     quarter: 1,
-    timeLeft: 900, // 15 mins
+    timeLeft: 900,
     homeScore: 0,
     awayScore: 0,
     homeTeam,
@@ -40,6 +41,17 @@ export const getCoachRecommendation = (state: GameState): PlayType => {
   const scoreDiff = offenseScore - defenseScore;
   const distToGoal = 100 - state.ballLocation;
 
+  // PAT Logic
+  if (state.isPointAfter) {
+    if (era.scoring.twoPtAvailable) {
+      // Chart logic: Go for 2 if down by 2, 5, 9, 10 etc.
+      if ([-2, -5, -9, -10, -13].includes(scoreDiff)) return PlayType.TWO_PT;
+      // Random aggression
+      if (scoreDiff < 0 && roll(0.1)) return PlayType.TWO_PT;
+    }
+    return PlayType.XP;
+  }
+
   // 4th Down Logic
   if (state.down === 4) {
     if (distToGoal <= 35) {
@@ -51,20 +63,17 @@ export const getCoachRecommendation = (state: GameState): PlayType => {
         return PlayType.RUN; // Go for it
       }
     } else if (distToGoal < 45 && scoreDiff < 0 && state.timeLeft < 120) {
-        // Desperation Hail Mary or Long FG
-        return PlayType.PASS;
+      return PlayType.PASS;
     } else {
       return PlayType.PUNT;
     }
-  } 
-  
+  }
+
   // 1st-3rd Down Logic
   const rand = Math.random();
   if (state.era === EraId.IRON_MAN && roll(era.probs.waste || 0)) {
-      // Check if we are hypothetically near a sideline (simulated abstractly here)
-      return PlayType.WASTE;
+    return PlayType.WASTE;
   } else if (rand < era.probs.run) {
-    // Occasional AI lateral mix-in (5% of run calls)
     if (roll(0.05)) return PlayType.LATERAL;
     return PlayType.RUN;
   } else if (rand < era.probs.run + era.probs.pass) {
@@ -79,6 +88,17 @@ export const getCoachRecommendation = (state: GameState): PlayType => {
  */
 export const getDefensiveCoachRecommendation = (state: GameState): DefensivePlayType => {
   const era = ERAS[state.era];
+
+  if (state.isKickoff) {
+    return DefensivePlayType.RETURN_SAFE;
+  }
+
+  if (state.isPointAfter) {
+    // If opponent likely to kick
+    if (!era.scoring.twoPtAvailable) return DefensivePlayType.FG_BLOCK;
+    // Goal line if 2pt possible and likely
+    return DefensivePlayType.GOAL_LINE;
+  }
 
   // 3rd & Long or 4th Down -> Pass Defense
   if ((state.down === 3 && state.distance > 7) || state.down === 4) {
@@ -104,8 +124,6 @@ export const getDefensiveCoachRecommendation = (state: GameState): DefensivePlay
 
 /**
  * Executes a specific play type (either chosen by user or AI).
- * userPlay can be an offensive or defensive play type depending on who the user controls.
- * userTeamSide indicates which team the user is controlling ('home' or 'away').
  */
 export const simulatePlay = (
   state: GameState,
@@ -124,37 +142,48 @@ export const simulatePlay = (
   let defPlay: DefensivePlayType;
 
   if (newState.isKickoff) {
+    // Offense is Kicking Team
     offPlay = PlayType.KICKOFF;
-    defPlay = DefensivePlayType.STANDARD; // Irrelevant for kickoff
-  } else {
-    // Offense Selection
+    // Defense is Receiving Team (controls return)
+    if (!isUserOffense) {
+      // User is Receiving Team
+      defPlay = (userPlay as DefensivePlayType) || getDefensiveCoachRecommendation(state);
+    } else {
+      // AI is Receiving Team
+      defPlay = getDefensiveCoachRecommendation(state);
+    }
+  } else if (newState.isPointAfter) {
     if (isUserOffense) {
-      // User is Offense: use input or AI fallback
       offPlay = (userPlay as PlayType) || getCoachRecommendation(state);
     } else {
-      // User is Defense: AI picks Offense
       offPlay = getCoachRecommendation(state);
     }
 
-    // Defense Selection
     if (!isUserOffense) {
-      // User is Defense: use input or AI fallback
       defPlay = (userPlay as DefensivePlayType) || getDefensiveCoachRecommendation(state);
     } else {
-      // User is Offense: AI picks Defense
+      defPlay = getDefensiveCoachRecommendation(state);
+    }
+  } else {
+    // Normal Play
+    if (isUserOffense) {
+      offPlay = (userPlay as PlayType) || getCoachRecommendation(state);
+    } else {
+      offPlay = getCoachRecommendation(state);
+    }
+
+    if (!isUserOffense) {
+      defPlay = (userPlay as DefensivePlayType) || getDefensiveCoachRecommendation(state);
+    } else {
       defPlay = getDefensiveCoachRecommendation(state);
     }
   }
 
-  // Ensure defPlay is defined for kickoffs
-  if (newState.isKickoff) {
-    defPlay = DefensivePlayType.STANDARD;
-  }
+  // Ensure defPlay is defined
+  if (!defPlay) defPlay = DefensivePlayType.STANDARD;
 
-  // Override: Pre-1906 Pass Ban enforcement (Sim engine overrides illegal user choices if strict,
-  // but we'll allow users to try illegal things for fun outcomes/penalties, handled in the switch below)
+  // Illegal pass check
   if (!era.rules.passLegal && offPlay === PlayType.PASS && !isUserOffense) {
-    // If AI picked pass illegally (shouldn't happen based on probs), force run
     offPlay = PlayType.RUN;
   }
 
@@ -163,402 +192,430 @@ export const simulatePlay = (
     defensivePlay: defPlay,
     yardsGained: 0,
     description: '',
-    timeElapsed: 0, // Calculated at end
+    timeElapsed: 0,
     offense: currentOffense
   };
 
-  // Calculate matchup modifiers based on defensive play
-  let runDefenseBonus = 0; // Yards subtracted from runs
-  let passDefenseBonus = 0; // Added to pass incompletion chance
+  // Modifiers
+  let runDefenseBonus = 0;
+  let passDefenseBonus = 0;
   let sackChance = 0;
   let bigPlayChance = 0;
 
   switch (defPlay) {
     case DefensivePlayType.RUN_DEFENSE:
-      runDefenseBonus = 3; // Subtract 3 yards from runs
-      passDefenseBonus = -0.15; // +15% completion chance (left open)
-      bigPlayChance = 0.05; // Risk of play action breakout
+    case DefensivePlayType.GOAL_LINE:
+      runDefenseBonus = 3;
+      passDefenseBonus = -0.15;
+      bigPlayChance = 0.05;
       break;
     case DefensivePlayType.PASS_DEFENSE:
-      runDefenseBonus = -2; // Add 2 yards to runs (lighter box)
-      passDefenseBonus = 0.15; // -15% completion chance
-      bigPlayChance = -0.05; // Prevent deep ball
+      runDefenseBonus = -2;
+      passDefenseBonus = 0.15;
+      bigPlayChance = -0.05;
       break;
     case DefensivePlayType.BLITZ:
       runDefenseBonus = 1;
-      sackChance = 0.15; // 15% sack chance on passes
-      bigPlayChance = 0.10; // High risk if blitz picked up
+      sackChance = 0.15;
+      bigPlayChance = 0.10;
+      break;
+    case DefensivePlayType.FG_BLOCK:
+      // Weak vs Fake, strong vs Kick
+      runDefenseBonus = -5;
+      passDefenseBonus = -0.30;
       break;
     case DefensivePlayType.STANDARD:
     default:
-      // Base stats - no modifiers
       break;
   }
 
   const distToGoal = 100 - newState.ballLocation;
 
-  // --- EXECUTION LOGIC ---
+  // --- EXECUTION ---
   let playTime = 0;
 
   switch (offPlay) {
     case PlayType.KICKOFF:
-        // Similar to Punt, but longer
-        const kickDist = randomInt(45, 75);
-        result.yardsGained = kickDist;
-        result.possessionChange = true;
-        
-        // Calculate landing spot relative to current field (0 = own endzone)
-        // Kickoff starts at ballLocation (e.g. 35). Lands at 35 + 60 = 95.
-        // Opponent receives at 95 (which is their 5 yard line).
-        // Flip logic: New Location = 100 - (CurrentLoc + Dist)
-        
-        let landingSpot = newState.ballLocation + kickDist;
-        let returnYards = randomInt(15, 30); // Simple return logic
-        
-        // Touchback logic
-        if (landingSpot >= 100) {
-            result.description = "Kickoff - Touchback.";
-            newState.ballLocation = 20; // Start at 20
+      const kickDist = randomInt(45, 75);
+      result.yardsGained = kickDist;
+      result.possessionChange = true;
+
+      let landingSpot = newState.ballLocation + kickDist;
+      let returnYards = 0;
+
+      // Return Logic
+      if (landingSpot >= 100) {
+        result.description = "Kickoff - Touchback.";
+        newState.ballLocation = 20;
+      } else {
+        // Calculate Return
+        let baseReturn = randomInt(10, 25);
+        let fumbleRisk = era.rules.fumbleRate * 1.5;
+
+        if (defPlay === DefensivePlayType.RETURN_SAFE) {
+          baseReturn -= 5;
+          fumbleRisk = 0;
+          result.description = `Kickoff of ${kickDist} yards. Safe return for ${Math.max(0, baseReturn)} yards.`;
+        } else if (defPlay === DefensivePlayType.RETURN_AGGRESSIVE) {
+          baseReturn += 10;
+          fumbleRisk *= 3;
+          // Big return chance
+          if (roll(0.05)) baseReturn += randomInt(20, 60);
+          result.description = `Kickoff of ${kickDist} yards. Aggressive return for ${baseReturn} yards.`;
         } else {
-             result.description = `Kickoff of ${kickDist} yards. Returned ${returnYards} yards.`;
-             // New Spot = 100 - (Landing - Return)
-             // Example: Kick from 35. Goes 60. Lands at 95.
-             // Return 20. Ball at 95 - 20 = 75 (relative to kicker).
-             // Flip: 100 - 75 = 25.
-             newState.ballLocation = 100 - (landingSpot - returnYards);
+          result.description = `Kickoff of ${kickDist} yards. Returned ${baseReturn} yards.`;
         }
 
-        newState.isKickoff = false;
-        newState.down = 1;
-        newState.distance = 10;
-        playTime = randomInt(10, 20);
-        break;
+        if (roll(fumbleRisk)) {
+          result.description += " FUMBLE on return! Kicking team recovers!";
+          result.turnover = true;
+          // Kicking team keeps ball
+          result.possessionChange = false;
+          // Recovered at end of run
+          newState.ballLocation = landingSpot - baseReturn;
+        } else {
+          returnYards = baseReturn;
+          // New Spot = 100 - (Landing - Return)
+          newState.ballLocation = 100 - (landingSpot - returnYards);
+        }
+      }
+
+      newState.isKickoff = false;
+      newState.down = 1;
+      newState.distance = 10;
+      playTime = randomInt(10, 20);
+      break;
+
+    case PlayType.XP:
+      let xpChance = 0.96;
+      // Distance difficulty
+      if (era.rules.xpLine > 10) xpChance = 0.93; // Modern
+      if (era.id === EraId.GENESIS) xpChance = 0.85;
+
+      // Block chance
+      if (defPlay === DefensivePlayType.FG_BLOCK && roll(0.05)) {
+        xpChance = 0;
+        result.description = "Extra Point BLOCKED!";
+      }
+
+      if (roll(xpChance)) {
+        result.description = "Extra Point is GOOD.";
+        result.scoreChange = {
+          team: newState.possession,
+          points: era.scoring.xp,
+          type: 'XP'
+        };
+      } else if (xpChance > 0) {
+        result.description = "Extra Point is NO GOOD (Wide).";
+      }
+
+      newState.isPointAfter = false;
+      newState.isKickoff = true;
+      newState.ballLocation = era.rules.kickoffLine;
+      result.possessionChange = false; // Kickoff pending
+      playTime = 0; // Untimed down usually
+      break;
+
+    case PlayType.TWO_PT:
+      // Essentially a short yardage play from the 2
+      let conversionSuccess = false;
+      // Simple logic: Run vs Pass
+      if (roll(0.5)) {
+        // Run
+        let pwr = randomInt(1, 100) + (defPlay === DefensivePlayType.GOAL_LINE ? -20 : 0);
+        if (pwr > 40) conversionSuccess = true;
+        result.description = conversionSuccess ? "2-Pt Conversion (Run) SUCCESS!" : "2-Pt Conversion (Run) STOPPED.";
+      } else {
+        // Pass
+        let acc = randomInt(1, 100) + (defPlay === DefensivePlayType.PASS_DEFENSE ? -20 : 0);
+        if (acc > 45) conversionSuccess = true;
+        result.description = conversionSuccess ? "2-Pt Conversion (Pass) SUCCESS!" : "2-Pt Conversion (Pass) INCOMPLETE.";
+      }
+
+      if (conversionSuccess) {
+        result.scoreChange = {
+          team: newState.possession,
+          points: 2,
+          type: '2PT'
+        };
+      }
+
+      newState.isPointAfter = false;
+      newState.isKickoff = true;
+      newState.ballLocation = era.rules.kickoffLine;
+      result.possessionChange = false;
+      playTime = 0;
+      break;
 
     case PlayType.WASTE:
-        result.yardsGained = 0;
-        result.description = "Ball carrier dives to center the ball away from the sideline.";
-        
-        if (newState.down === 4) {
-            result.description += " TURNOVER ON DOWNS.";
-            result.possessionChange = true;
-            newState.ballLocation = 100 - newState.ballLocation;
-        } else {
-            newState.down++;
-        }
-        
-        playTime = randomInt(30, 45);
-        break;
+      result.yardsGained = 0;
+      result.description = "Ball carrier dives to center the ball away from the sideline.";
+      if (newState.down === 4) {
+        result.description += " TURNOVER ON DOWNS.";
+        result.possessionChange = true;
+        newState.ballLocation = 100 - newState.ballLocation;
+      } else {
+        newState.down++;
+      }
+      playTime = randomInt(30, 45);
+      break;
 
     case PlayType.PUNT:
-        const puntDist = randomInt(30, 50);
-        result.yardsGained = puntDist;
-        result.description = `Punt of ${puntDist} yards.`;
-        result.possessionChange = true;
-        // Flip field
-        newState.ballLocation = 100 - (newState.ballLocation + puntDist);
-        if (newState.ballLocation < 0) newState.ballLocation = 20; // Touchback
-        newState.down = 1;
-        newState.distance = 10;
-        playTime = randomInt(10, 20); // Special teams plays are quick
-        break;
+      const puntDist = randomInt(30, 50);
+      result.yardsGained = puntDist;
+      result.description = `Punt of ${puntDist} yards.`;
+      result.possessionChange = true;
+      newState.ballLocation = 100 - (newState.ballLocation + puntDist);
+      if (newState.ballLocation < 0) newState.ballLocation = 20;
+      newState.down = 1;
+      newState.distance = 10;
+      playTime = randomInt(10, 20);
+      break;
 
     case PlayType.FG:
-        // Accuracy
-        let fgChance = 0.6; // Base
-        if (state.era === EraId.GENESIS || state.era === EraId.IRON_MAN) fgChance = 0.4;
-        if (state.era === EraId.IRON_MAN) fgChance = 0.7; 
-        if (state.era === EraId.STRATEGY) fgChance = 0.85;
+      let fgChance = 0.6;
+      if (state.era === EraId.GENESIS || state.era === EraId.IRON_MAN) fgChance = 0.4;
+      if (state.era === EraId.IRON_MAN) fgChance = 0.7;
+      if (state.era === EraId.STRATEGY) fgChance = 0.85;
 
-        // Distance modifier
+      // Block check
+      if (defPlay === DefensivePlayType.FG_BLOCK && roll(0.10)) {
+        fgChance = 0;
+        result.description = "Field Goal BLOCKED!";
+      } else {
         fgChance -= (distToGoal - 20) * 0.01;
+      }
 
-        if (roll(fgChance)) {
-            result.description = `Field Goal from ${distToGoal + 17} yards is GOOD!`;
-            result.scoreChange = {
-                team: newState.possession,
-                points: era.scoring.fg,
-                type: 'FG'
-            };
-            // On Score, set up Kickoff for next play
-            newState.isKickoff = true;
-            newState.ballLocation = era.rules.kickoffLine;
-            result.possessionChange = false; // Keep possession to kick off
-        } else {
-            result.description = `Field Goal from ${distToGoal + 17} yards is NO GOOD.`;
-            result.possessionChange = true;
-            newState.ballLocation = 100 - newState.ballLocation; // Turnover at spot
-            newState.down = 1;
-            newState.distance = 10;
-        }
-        playTime = randomInt(5, 10);
-        break;
+      if (roll(fgChance)) {
+        result.description = `Field Goal from ${distToGoal + 17} yards is GOOD!`;
+        result.scoreChange = {
+          team: newState.possession,
+          points: era.scoring.fg,
+          type: 'FG'
+        };
+        newState.isKickoff = true;
+        newState.ballLocation = era.rules.kickoffLine;
+        result.possessionChange = false;
+      } else {
+        result.description = `Field Goal from ${distToGoal + 17} yards is NO GOOD.`;
+        result.possessionChange = true;
+        newState.ballLocation = 100 - newState.ballLocation;
+        newState.down = 1;
+        newState.distance = 10;
+      }
+      playTime = randomInt(5, 10);
+      break;
 
     case PlayType.RUN:
     case PlayType.PASS:
     case PlayType.LATERAL:
-        let yards = 0;
-        let isTurnover = false;
-        let isTD = false;
-        let isIncomplete = false;
+      let yards = 0;
+      let isTurnover = false;
+      let isTD = false;
+      let isIncomplete = false;
 
-        // Validation for Passing in early eras
-        if (offPlay === PlayType.PASS && !era.rules.passLegal) {
-             // If user forced a pass in an illegal era
-             if (roll(0.8)) {
-                 result.description = "Illegal Forward Pass! Penalty.";
-                 yards = -5;
-
-                 // Penalty logic for downs
-                 if (era.rules.incompletionPenalty) {
-                    // In early eras, some penalties lost down, others didn't.
-                    // Simplifying to down loss for flow.
-                    if (newState.down === 4) {
-                        result.description += " TURNOVER ON DOWNS.";
-                        result.possessionChange = true;
-                        newState.ballLocation = 100 - (newState.ballLocation + yards);
-                    } else {
-                        newState.down++;
-                    }
-                 }
-
-                 playTime = 10;
-                 result.yardsGained = yards;
-                 newState.ballLocation += yards; // Backwards
-                 newState.distance -= yards; // Increase distance
-                 break;
-             }
-        }
-
-        // SACK CHECK (Blitz or lucky hit)
-        if (offPlay === PlayType.PASS && sackChance > 0 && roll(sackChance)) {
-            yards = randomInt(-8, -1);
-            result.description = `SACKED for ${yards} yards! Defense brings the heat.`;
-            result.yardsGained = yards;
-            newState.ballLocation += yards;
-            newState.distance -= yards;
-
+      // Validation for Passing in early eras
+      if (offPlay === PlayType.PASS && !era.rules.passLegal) {
+        if (roll(0.8)) {
+          result.description = "Illegal Forward Pass! Penalty.";
+          yards = -5;
+          if (era.rules.incompletionPenalty) {
             if (newState.down === 4) {
-                result.description += " TURNOVER ON DOWNS.";
-                result.possessionChange = true;
-                newState.ballLocation = 100 - newState.ballLocation;
+              result.description += " TURNOVER ON DOWNS.";
+              result.possessionChange = true;
+              newState.ballLocation = 100 - (newState.ballLocation + yards);
             } else {
-                newState.down++;
+              newState.down++;
             }
-
-            playTime = randomInt(5, 10);
-            break;
-        }
-
-        // Turnover Check
-        // Fumble logic varies by play type
-        let fumbleChance = era.rules.fumbleRate;
-        if (offPlay === PlayType.LATERAL) fumbleChance *= 1.5; // Pitch plays are riskier
-
-        if (offPlay !== PlayType.PASS && roll(fumbleChance)) {
-             isTurnover = true;
-             result.description = "FUMBLE! Turnover.";
-        } else if (offPlay === PlayType.PASS && roll(era.rules.interceptionRate)) {
-             isTurnover = true;
-             result.description = "INTERCEPTED!";
-        } else if (offPlay === PlayType.PASS && state.era === EraId.GENESIS && roll(0.6)) {
-             // Incomplete pass in early era = penalty
-             if (era.rules.incompletionPenalty) {
-                 result.description = "Incomplete pass! 15 yard penalty.";
-                 yards = -15;
-             } else {
-                 result.description = "Incomplete pass.";
-                 isIncomplete = true;
-             }
-        } else {
-            // Successful Play Calculation
-            if (offPlay === PlayType.RUN) {
-                // Skewed towards 3-4 yards, apply defensive modifier
-                yards = randomInt(-2, 12) - runDefenseBonus;
-                // Big play chance modified by defense
-                if (roll(0.05 + bigPlayChance)) yards += randomInt(10, 40);
-                result.description = `Run for ${yards} yards.`;
-            } else if (offPlay === PlayType.LATERAL) {
-                // High Variance, apply run defense modifier
-                const outcome = Math.random();
-                if (outcome < 0.25) {
-                    // Tackled in backfield
-                    yards = randomInt(-7, -2) - runDefenseBonus;
-                    result.description = `Toss play stuffed for ${yards} yards.`;
-                } else if (outcome < 0.40) {
-                     // Short gain / No gain
-                     yards = randomInt(-1, 2) - runDefenseBonus;
-                     result.description = `Lateral goes for ${yards} yards.`;
-                } else {
-                     // Outside seal
-                     yards = randomInt(5, 20) - runDefenseBonus;
-                     // Big breakout chance modified by defense
-                     if (roll(0.15 + bigPlayChance)) yards += randomInt(20, 50);
-                     result.description = `Toss to the outside for ${yards} yards.`;
-                }
-            } else {
-                // Pass logic - apply defensive modifier to completion rate
-                const completionChance = 0.60 - passDefenseBonus;
-                if (roll(completionChance)) {
-                    yards = randomInt(5, 20);
-                    // Deep ball chance modified by defense
-                    if (roll(0.10 + bigPlayChance)) yards += randomInt(20, 60);
-                    result.description = `Pass complete for ${yards} yards.`;
-                } else {
-                    yards = 0;
-                    result.description = "Pass incomplete.";
-                    isIncomplete = true;
-                }
-            }
-        }
-
-        // Apply Logic
-        if (isTurnover) {
-            result.possessionChange = true;
-            result.turnover = true;
-            newState.ballLocation = 100 - (newState.ballLocation + yards); // Simplified recovery spot
-            newState.down = 1;
-            newState.distance = 10;
-            playTime = randomInt(10, 20); // Clock stops on turnover
-        } else if (isIncomplete) {
-            result.yardsGained = 0;
-            
-            if (newState.down === 4) {
-                result.description += " TURNOVER ON DOWNS.";
-                result.possessionChange = true;
-                newState.ballLocation = 100 - newState.ballLocation;
-            } else {
-                newState.down++;
-            }
-            
-            playTime = randomInt(5, 10); // Clock stops on incomplete
-        } else {
-            result.yardsGained = yards;
-            newState.ballLocation += yards;
-            newState.distance -= yards;
-            
-            // Clock Logic for standard play
-            if (offPlay === PlayType.PASS) {
-                playTime = randomInt(25, 40);
-            } else {
-                playTime = randomInt(30, 45); // Runs/Laterals take time
-            }
-
-            // TD Check
-            if (newState.ballLocation >= 100) {
-                isTD = true;
-                result.description += " TOUCHDOWN!";
-                result.scoreChange = {
-                    team: newState.possession,
-                    points: era.scoring.td, // Base TD points
-                    type: 'TD'
-                };
-
-                // XP / 2PT Logic
-                const goFor2 = era.scoring.twoPtAvailable && Math.random() < 0.1;
-                let extraPoints = 0;
-                if (goFor2) {
-                    if (roll(0.45)) {
-                        extraPoints = 2;
-                        result.description += " (2-Pt Conversion Good)";
-                    } else {
-                        result.description += " (2-Pt Failed)";
-                    }
-                } else {
-                    // XP
-                    let xpChance = 0.95;
-                    if (state.era === EraId.SPREAD) xpChance = 0.94; // Longer XP
-                    if (state.era === EraId.GENESIS) xpChance = 0.85; 
-                    
-                    if (roll(xpChance)) {
-                         extraPoints = era.scoring.xp;
-                         result.description += " (XP Good)";
-                    } else {
-                        result.description += " (XP Missed)";
-                    }
-                }
-                
-                if (result.scoreChange) {
-                    result.scoreChange.points += extraPoints;
-                }
-
-                // Setup Kickoff
-                newState.isKickoff = true;
-                newState.ballLocation = era.rules.kickoffLine;
-                result.possessionChange = false; // Scoring team keeps ball to kick
-                
-                playTime = randomInt(5, 10); // Clock stops on TD
-            } else if (newState.distance <= 0) {
-                // First Down
-                newState.down = 1;
-                newState.distance = 10;
-                result.description += " FIRST DOWN!";
-            } else {
-                // Not a First Down
-                if (newState.down === 4) {
-                    result.description += " TURNOVER ON DOWNS.";
-                    result.possessionChange = true;
-                    // Turnover at spot: Field position flips for opponent
-                    newState.ballLocation = 100 - newState.ballLocation;
-                } else {
-                    newState.down++;
-                }
-            }
-        }
-        break;
-  }
-
-  // Safety Check (Own Endzone)
-  if (newState.ballLocation <= 0 && !result.possessionChange && offPlay !== PlayType.KICKOFF) {
-      result.description += " SAFETY!";
-      result.scoreChange = {
-          team: newState.possession === 'home' ? 'away' : 'home',
-          points: era.scoring.safety,
-          type: 'SAFETY'
-      };
-      
-      // Safety = Free Kick from 20
-      newState.isKickoff = true;
-      newState.ballLocation = 20; 
-      result.possessionChange = false; // Kicking team keeps ball
-      
-      playTime = randomInt(5, 10);
-  }
-
-  // Assign calculated time
-  result.timeElapsed = playTime;
-
-  // Time Management
-  newState.timeLeft -= result.timeElapsed;
-  if (newState.timeLeft <= 0) {
-      if (newState.quarter >= 4) {
-          if (newState.homeScore === newState.awayScore && era.rules.otEnabled && newState.quarter === 4) {
-              newState.quarter = 5; // OT
-              newState.timeLeft = 900;
-              result.description += " End of Regulation. Going to Overtime!";
-          } else {
-              newState.isGameOver = true;
-              result.description += " GAME OVER.";
           }
-      } else {
-          newState.quarter++;
-          newState.timeLeft = 900;
-          result.description += ` End of Quarter ${newState.quarter - 1}.`;
+          playTime = 10;
+          result.yardsGained = yards;
+          newState.ballLocation += yards;
+          newState.distance -= yards;
+          break;
+        }
       }
+
+      // Sack Check
+      if (offPlay === PlayType.PASS && sackChance > 0 && roll(sackChance)) {
+        yards = randomInt(-8, -1);
+        result.description = `SACKED for ${yards} yards!`;
+        result.yardsGained = yards;
+        newState.ballLocation += yards;
+        newState.distance -= yards;
+
+        if (newState.down === 4) {
+          result.description += " TURNOVER ON DOWNS.";
+          result.possessionChange = true;
+          newState.ballLocation = 100 - newState.ballLocation;
+        } else {
+          newState.down++;
+        }
+        playTime = randomInt(5, 10);
+        break;
+      }
+
+      // Turnover Check
+      let fumbleChance = era.rules.fumbleRate;
+      if (offPlay === PlayType.LATERAL) fumbleChance *= 1.5;
+
+      if (offPlay !== PlayType.PASS && roll(fumbleChance)) {
+        isTurnover = true;
+        result.description = "FUMBLE! Turnover.";
+      } else if (offPlay === PlayType.PASS && roll(era.rules.interceptionRate)) {
+        isTurnover = true;
+        result.description = "INTERCEPTED!";
+      } else if (offPlay === PlayType.PASS && state.era === EraId.GENESIS && roll(0.6)) {
+        if (era.rules.incompletionPenalty) {
+          result.description = "Incomplete pass! 15 yard penalty.";
+          yards = -15;
+        } else {
+          result.description = "Incomplete pass.";
+          isIncomplete = true;
+        }
+      } else {
+        // Successful Play
+        if (offPlay === PlayType.RUN) {
+          yards = randomInt(-2, 12) - runDefenseBonus;
+          if (roll(0.05 + bigPlayChance)) yards += randomInt(10, 40);
+          result.description = `Run for ${yards} yards.`;
+        } else if (offPlay === PlayType.LATERAL) {
+          const outcome = Math.random();
+          if (outcome < 0.25) {
+            yards = randomInt(-7, -2) - runDefenseBonus;
+            result.description = `Toss play stuffed for ${yards} yards.`;
+          } else if (outcome < 0.40) {
+            yards = randomInt(-1, 2) - runDefenseBonus;
+            result.description = `Lateral goes for ${yards} yards.`;
+          } else {
+            yards = randomInt(5, 20) - runDefenseBonus;
+            if (roll(0.15 + bigPlayChance)) yards += randomInt(20, 50);
+            result.description = `Toss to the outside for ${yards} yards.`;
+          }
+        } else {
+          const completionChance = 0.60 - passDefenseBonus;
+          if (roll(completionChance)) {
+            yards = randomInt(5, 20);
+            if (roll(0.10 + bigPlayChance)) yards += randomInt(20, 60);
+            result.description = `Pass complete for ${yards} yards.`;
+          } else {
+            yards = 0;
+            result.description = "Pass incomplete.";
+            isIncomplete = true;
+          }
+        }
+      }
+
+      if (isTurnover) {
+        result.possessionChange = true;
+        result.turnover = true;
+        newState.ballLocation = 100 - (newState.ballLocation + yards);
+        newState.down = 1;
+        newState.distance = 10;
+        playTime = randomInt(10, 20);
+      } else if (isIncomplete) {
+        result.yardsGained = 0;
+        if (newState.down === 4) {
+          result.description += " TURNOVER ON DOWNS.";
+          result.possessionChange = true;
+          newState.ballLocation = 100 - newState.ballLocation;
+        } else {
+          newState.down++;
+        }
+        playTime = randomInt(5, 10);
+      } else {
+        result.yardsGained = yards;
+        newState.ballLocation += yards;
+        newState.distance -= yards;
+
+        if (offPlay === PlayType.PASS) {
+          playTime = randomInt(25, 40);
+        } else {
+          playTime = randomInt(30, 45);
+        }
+
+        if (newState.ballLocation >= 100) {
+          isTD = true;
+          result.description += " TOUCHDOWN!";
+          result.scoreChange = {
+            team: newState.possession,
+            points: era.scoring.td,
+            type: 'TD'
+          };
+
+          // Trigger PAT
+          newState.isPointAfter = true;
+          newState.isKickoff = false; // Not yet
+
+          // Set Ball for PAT
+          newState.ballLocation = 100 - era.rules.xpLine;
+          newState.down = 1;
+          newState.distance = era.rules.xpLine; // Distance to goal
+
+          playTime = randomInt(5, 10);
+        } else if (newState.distance <= 0) {
+          newState.down = 1;
+          newState.distance = 10;
+          result.description += " FIRST DOWN!";
+        } else {
+          if (newState.down === 4) {
+            result.description += " TURNOVER ON DOWNS.";
+            result.possessionChange = true;
+            newState.ballLocation = 100 - newState.ballLocation;
+          } else {
+            newState.down++;
+          }
+        }
+      }
+      break;
   }
 
-  // Handle Possession Change
+  // Safety Check
+  if (newState.ballLocation <= 0 && !result.possessionChange && offPlay !== PlayType.KICKOFF) {
+    result.description += " SAFETY!";
+    result.scoreChange = {
+      team: newState.possession === 'home' ? 'away' : 'home',
+      points: era.scoring.safety,
+      type: 'SAFETY'
+    };
+
+    newState.isKickoff = true;
+    newState.isPointAfter = false;
+    newState.ballLocation = 20;
+    result.possessionChange = false;
+    playTime = randomInt(5, 10);
+  }
+
+  result.timeElapsed = playTime;
+  newState.timeLeft -= result.timeElapsed;
+
+  // Game Over / Quarter End Check
+  if (newState.timeLeft <= 0) {
+    if (newState.quarter >= 4) {
+      if (newState.homeScore === newState.awayScore && era.rules.otEnabled && newState.quarter === 4) {
+        newState.quarter = 5;
+        newState.timeLeft = 900;
+        result.description += " End of Regulation. Going to Overtime!";
+      } else {
+        newState.isGameOver = true;
+        result.description += " GAME OVER.";
+      }
+    } else {
+      newState.quarter++;
+      newState.timeLeft = 900;
+      result.description += ` End of Quarter ${newState.quarter - 1}.`;
+    }
+  }
+
   if (result.possessionChange && !newState.isGameOver) {
-      newState.possession = newState.possession === 'home' ? 'away' : 'home';
-      // Reset downs, but DO NOT overwrite ballLocation. 
-      // The individual play types (Punt, Turnover, Kickoff) must calculate field position logic.
-      newState.down = 1;
-      newState.distance = 10;
+    newState.possession = newState.possession === 'home' ? 'away' : 'home';
+    newState.down = 1;
+    newState.distance = 10;
   }
 
-  // Apply Scores
   if (result.scoreChange) {
-      if (result.scoreChange.team === 'home') newState.homeScore += result.scoreChange.points;
-      else newState.awayScore += result.scoreChange.points;
+    if (result.scoreChange.team === 'home') newState.homeScore += result.scoreChange.points;
+    else newState.awayScore += result.scoreChange.points;
   }
 
   newState.playLog = [result, ...newState.playLog];

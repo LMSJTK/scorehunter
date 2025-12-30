@@ -32,6 +32,7 @@ export interface EraConfig {
     hashMarks: boolean;
     otEnabled: boolean;
     kickoffLine: number;
+    xpLine: number; // Distance from goal for XP/2PT
     fumbleRate: number;
     interceptionRate: number;
     incompletionPenalty: boolean; // Era 1 specific
@@ -56,6 +57,12 @@ export enum DefensivePlayType {
   RUN_DEFENSE = 'RUN_DEFENSE', // Stuffs runs, weak to pass
   PASS_DEFENSE = 'PASS_DEFENSE', // Stops deep passes, allows short runs
   BLITZ = 'BLITZ', // High risk/reward: Sacks or Big Plays
+
+  // Special Teams Defense
+  FG_BLOCK = 'FG_BLOCK',
+  GOAL_LINE = 'GOAL_LINE', // vs 2PT
+  RETURN_SAFE = 'RETURN_SAFE',
+  RETURN_AGGRESSIVE = 'RETURN_AGGRESSIVE'
 }
 
 export interface PlayResult {
@@ -80,7 +87,8 @@ export interface PlayResult {
 export interface GameState {
   isPlaying: boolean;
   isGameOver: boolean;
-  isKickoff: boolean; // New flag to track if next play must be a kickoff
+  isKickoff: boolean; // Flag if next play must be a kickoff
+  isPointAfter: boolean; // Flag if next play is a PAT attempt
   quarter: number;
   timeLeft: number; // Seconds remaining in quarter
   homeScore: number;
