@@ -210,6 +210,8 @@ const App: React.FC = () => {
                                     disabled={false}
                                     possessionTeam={gameState.possession === 'home' ? gameState.homeTeam : gameState.awayTeam}
                                     isDefense={isUserDefense}
+                                    isKickoff={gameState.isKickoff}
+                                    isPointAfter={gameState.isPointAfter}
                                 />
                                 <div className="text-center">
                                     <button 

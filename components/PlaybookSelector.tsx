@@ -9,6 +9,8 @@ interface Props {
   disabled: boolean;
   possessionTeam: string;
   isDefense: boolean;
+  isKickoff: boolean;
+  isPointAfter: boolean;
 }
 
 const PlaybookSelector: React.FC<Props> = ({
@@ -17,15 +19,17 @@ const PlaybookSelector: React.FC<Props> = ({
   era,
   disabled,
   possessionTeam,
-  isDefense
+  isDefense,
+  isKickoff,
+  isPointAfter
 }) => {
   const eraConfig = ERAS[era];
 
   // --- KICKOFF PHASE ---
-  // If AI recommends KICKOFF, it is the start of a half or after a score.
+  // Use the isKickoff flag to determine if we're in kickoff phase
   // We need to differentiate between the Kicker (Offense) and Returner (Defense).
 
-  if (recommendedPlay === PlayType.KICKOFF) {
+  if (isKickoff) {
     if (isDefense) {
       // User is RECEIVING the kickoff
       return (
@@ -80,8 +84,8 @@ const PlaybookSelector: React.FC<Props> = ({
   }
 
   // --- PAT PHASE ---
-  // Detected via recommended play being XP or 2PT (which only happens if isPointAfter=true in engine)
-  if (recommendedPlay === PlayType.XP || recommendedPlay === PlayType.TWO_PT) {
+  // Use the isPointAfter flag to determine if we're in PAT phase
+  if (isPointAfter) {
     if (isDefense) {
       // Defense against PAT
       return (
