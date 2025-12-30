@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { TEAMS, ERAS } from './constants';
-import { EraId, GameState, ScoragamiEntry, PlayType } from './types';
-import { initializeGame, simulatePlay, getCoachRecommendation } from './services/footballEngine';
+import { EraId, GameState, ScoragamiEntry, PlayType, DefensivePlayType } from './types';
+import { initializeGame, simulatePlay, getCoachRecommendation, getDefensiveCoachRecommendation } from './services/footballEngine';
 import Scoreboard from './components/Scoreboard';
 import EraSelector from './components/EraSelector';
 import PlayLog from './components/PlayLog';
@@ -23,6 +23,9 @@ const App: React.FC = () => {
   // Team Selection State
   const [homeTeam, setHomeTeam] = useState<string>(TEAMS[0]);
   const [awayTeam, setAwayTeam] = useState<string>(TEAMS[1]);
+
+  // User Control State - which team is the user controlling?
+  const [userSide, setUserSide] = useState<'home' | 'away'>('home');
 
   // --- PERSISTENCE ---
   useEffect(() => {
@@ -78,17 +81,17 @@ const App: React.FC = () => {
     setViewMode('log'); // Reset to log on new game
   };
 
-  const handleSimulatePlay = useCallback((forcedPlayType?: PlayType) => {
+  const handleSimulatePlay = useCallback((playChoice?: PlayType | DefensivePlayType) => {
     if (!gameState || gameState.isGameOver) return;
-    
-    const { newState, result } = simulatePlay(gameState, forcedPlayType);
+
+    const { newState, result } = simulatePlay(gameState, playChoice, userSide);
     setGameState(newState);
 
     if (newState.isGameOver) {
       setAutoSim(false);
       saveScoragami(newState.homeScore, newState.awayScore, ERAS[selectedEra].name);
     }
-  }, [gameState, selectedEra]);
+  }, [gameState, selectedEra, userSide]);
 
   const toggleAutoSim = () => {
     if (gameState?.isGameOver) return;
@@ -109,10 +112,13 @@ const App: React.FC = () => {
   }, [autoSim, gameState, handleSimulatePlay, viewMode]);
 
   // Derived State
+  const isUserDefense = gameState ? gameState.possession !== userSide : false;
+
   const recommendedPlay = useMemo(() => {
     if (!gameState) return PlayType.RUN;
+    if (isUserDefense) return getDefensiveCoachRecommendation(gameState);
     return getCoachRecommendation(gameState);
-  }, [gameState]);
+  }, [gameState, isUserDefense]);
 
   // --- RENDER ---
 
@@ -165,12 +171,30 @@ const App: React.FC = () => {
              </div>
           ) : (
             <div className="space-y-4">
+                {/* Team Control Toggle */}
+                <div className="flex justify-center">
+                  <div className="bg-slate-900 p-1 rounded-full border border-slate-700 flex text-xs font-bold">
+                    <button
+                      onClick={() => setUserSide('home')}
+                      className={`px-4 py-1.5 rounded-full transition-all ${userSide === 'home' ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                    >
+                      Play as {gameState.homeTeam}
+                    </button>
+                    <button
+                      onClick={() => setUserSide('away')}
+                      className={`px-4 py-1.5 rounded-full transition-all ${userSide === 'away' ? 'bg-red-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                    >
+                      Play as {gameState.awayTeam}
+                    </button>
+                  </div>
+                </div>
+
                 {/* GAME CONTROLS AREA */}
                 {!gameState.isGameOver && (
                     <div className="flex flex-col gap-4">
                         {/* If AutoSim is ON, show status. If OFF, show Playbook. */}
                         {autoSim ? (
-                             <button 
+                             <button
                                 onClick={toggleAutoSim}
                                 className="w-full py-8 bg-amber-600 hover:bg-amber-500 border border-amber-500 text-white font-bold rounded-xl shadow-lg flex flex-col items-center justify-center animate-pulse gap-2"
                              >
@@ -179,12 +203,13 @@ const App: React.FC = () => {
                             </button>
                         ) : (
                             <div className="space-y-4">
-                                <PlaybookSelector 
+                                <PlaybookSelector
                                     onSelectPlay={(type) => handleSimulatePlay(type)}
                                     recommendedPlay={recommendedPlay}
                                     era={selectedEra}
                                     disabled={false}
                                     possessionTeam={gameState.possession === 'home' ? gameState.homeTeam : gameState.awayTeam}
+                                    isDefense={isUserDefense}
                                 />
                                 <div className="text-center">
                                     <button 

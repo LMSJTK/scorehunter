@@ -1,5 +1,5 @@
 import { ERAS } from '../constants';
-import { EraId, GameState, PlayResult, PlayType } from '../types';
+import { EraId, GameState, PlayResult, PlayType, DefensivePlayType } from '../types';
 
 // Helper to get a random number between min and max
 const randomInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1) + min);
@@ -75,46 +75,132 @@ export const getCoachRecommendation = (state: GameState): PlayType => {
 };
 
 /**
- * Executes a specific play type (either chosen by user or AI).
+ * Determines what the AI defensive coordinator would call in this situation.
  */
-export const simulatePlay = (state: GameState, chosenPlay?: PlayType): { newState: GameState; result: PlayResult } => {
+export const getDefensiveCoachRecommendation = (state: GameState): DefensivePlayType => {
   const era = ERAS[state.era];
-  const newState = { ...state };
-  
-  // Determine decision: User choice OR AI recommendation
-  let decision = chosenPlay;
-  
-  // Force Kickoff if state dictates
-  if (newState.isKickoff) {
-      decision = PlayType.KICKOFF;
-  } else if (!decision) {
-      decision = getCoachRecommendation(state);
+
+  // 3rd & Long or 4th Down -> Pass Defense
+  if ((state.down === 3 && state.distance > 7) || state.down === 4) {
+    return DefensivePlayType.PASS_DEFENSE;
   }
 
-  // Override: Pre-1906 Pass Ban enforcement (Sim engine overrides illegal user choices if strict, 
-  // but we'll allow users to try illegal things for fun outcomes/penalties, handled in the switch below)
-  if (!era.rules.passLegal && decision === PlayType.PASS && !chosenPlay) {
-      // If AI picked pass illegally (shouldn't happen based on probs), force run
-      decision = PlayType.RUN;
+  // Short yardage -> Run Defense
+  if (state.distance <= 2) {
+    return DefensivePlayType.RUN_DEFENSE;
   }
+
+  // Random mix based on Era
+  const rand = Math.random();
+  if (era.id === EraId.GENESIS || era.id === EraId.IRON_MAN) {
+    return rand < 0.7 ? DefensivePlayType.RUN_DEFENSE : DefensivePlayType.STANDARD;
+  }
+
+  // Modern Eras: Mix in Blitzes
+  if (rand < 0.2) return DefensivePlayType.BLITZ;
+  if (rand < 0.6) return DefensivePlayType.STANDARD;
+  return DefensivePlayType.PASS_DEFENSE;
+};
+
+/**
+ * Executes a specific play type (either chosen by user or AI).
+ * userPlay can be an offensive or defensive play type depending on who the user controls.
+ * userTeamSide indicates which team the user is controlling ('home' or 'away').
+ */
+export const simulatePlay = (
+  state: GameState,
+  userPlay?: PlayType | DefensivePlayType,
+  userTeamSide: 'home' | 'away' = 'home'
+): { newState: GameState; result: PlayResult } => {
+  const era = ERAS[state.era];
+  const newState = { ...state };
 
   // Determine who is on offense for this play (before possession changes)
   const currentOffense = newState.possession;
+  const isUserOffense = currentOffense === userTeamSide;
+
+  // Determine plays based on user control
+  let offPlay: PlayType;
+  let defPlay: DefensivePlayType;
+
+  if (newState.isKickoff) {
+    offPlay = PlayType.KICKOFF;
+    defPlay = DefensivePlayType.STANDARD; // Irrelevant for kickoff
+  } else {
+    // Offense Selection
+    if (isUserOffense) {
+      // User is Offense: use input or AI fallback
+      offPlay = (userPlay as PlayType) || getCoachRecommendation(state);
+    } else {
+      // User is Defense: AI picks Offense
+      offPlay = getCoachRecommendation(state);
+    }
+
+    // Defense Selection
+    if (!isUserOffense) {
+      // User is Defense: use input or AI fallback
+      defPlay = (userPlay as DefensivePlayType) || getDefensiveCoachRecommendation(state);
+    } else {
+      // User is Offense: AI picks Defense
+      defPlay = getDefensiveCoachRecommendation(state);
+    }
+  }
+
+  // Ensure defPlay is defined for kickoffs
+  if (newState.isKickoff) {
+    defPlay = DefensivePlayType.STANDARD;
+  }
+
+  // Override: Pre-1906 Pass Ban enforcement (Sim engine overrides illegal user choices if strict,
+  // but we'll allow users to try illegal things for fun outcomes/penalties, handled in the switch below)
+  if (!era.rules.passLegal && offPlay === PlayType.PASS && !isUserOffense) {
+    // If AI picked pass illegally (shouldn't happen based on probs), force run
+    offPlay = PlayType.RUN;
+  }
 
   let result: PlayResult = {
-    type: decision,
+    type: offPlay,
+    defensivePlay: defPlay,
     yardsGained: 0,
     description: '',
     timeElapsed: 0, // Calculated at end
     offense: currentOffense
   };
 
+  // Calculate matchup modifiers based on defensive play
+  let runDefenseBonus = 0; // Yards subtracted from runs
+  let passDefenseBonus = 0; // Added to pass incompletion chance
+  let sackChance = 0;
+  let bigPlayChance = 0;
+
+  switch (defPlay) {
+    case DefensivePlayType.RUN_DEFENSE:
+      runDefenseBonus = 3; // Subtract 3 yards from runs
+      passDefenseBonus = -0.15; // +15% completion chance (left open)
+      bigPlayChance = 0.05; // Risk of play action breakout
+      break;
+    case DefensivePlayType.PASS_DEFENSE:
+      runDefenseBonus = -2; // Add 2 yards to runs (lighter box)
+      passDefenseBonus = 0.15; // -15% completion chance
+      bigPlayChance = -0.05; // Prevent deep ball
+      break;
+    case DefensivePlayType.BLITZ:
+      runDefenseBonus = 1;
+      sackChance = 0.15; // 15% sack chance on passes
+      bigPlayChance = 0.10; // High risk if blitz picked up
+      break;
+    case DefensivePlayType.STANDARD:
+    default:
+      // Base stats - no modifiers
+      break;
+  }
+
   const distToGoal = 100 - newState.ballLocation;
 
   // --- EXECUTION LOGIC ---
   let playTime = 0;
 
-  switch (decision) {
+  switch (offPlay) {
     case PlayType.KICKOFF:
         // Similar to Punt, but longer
         const kickDist = randomInt(45, 75);
@@ -216,15 +302,15 @@ export const simulatePlay = (state: GameState, chosenPlay?: PlayType): { newStat
         let isIncomplete = false;
 
         // Validation for Passing in early eras
-        if (decision === PlayType.PASS && !era.rules.passLegal) {
+        if (offPlay === PlayType.PASS && !era.rules.passLegal) {
              // If user forced a pass in an illegal era
              if (roll(0.8)) {
                  result.description = "Illegal Forward Pass! Penalty.";
                  yards = -5;
-                 
+
                  // Penalty logic for downs
                  if (era.rules.incompletionPenalty) {
-                    // In early eras, some penalties lost down, others didn't. 
+                    // In early eras, some penalties lost down, others didn't.
                     // Simplifying to down loss for flow.
                     if (newState.down === 4) {
                         result.description += " TURNOVER ON DOWNS.";
@@ -234,27 +320,47 @@ export const simulatePlay = (state: GameState, chosenPlay?: PlayType): { newStat
                         newState.down++;
                     }
                  }
-                 
+
                  playTime = 10;
                  result.yardsGained = yards;
                  newState.ballLocation += yards; // Backwards
                  newState.distance -= yards; // Increase distance
-                 break; 
+                 break;
              }
+        }
+
+        // SACK CHECK (Blitz or lucky hit)
+        if (offPlay === PlayType.PASS && sackChance > 0 && roll(sackChance)) {
+            yards = randomInt(-8, -1);
+            result.description = `SACKED for ${yards} yards! Defense brings the heat.`;
+            result.yardsGained = yards;
+            newState.ballLocation += yards;
+            newState.distance -= yards;
+
+            if (newState.down === 4) {
+                result.description += " TURNOVER ON DOWNS.";
+                result.possessionChange = true;
+                newState.ballLocation = 100 - newState.ballLocation;
+            } else {
+                newState.down++;
+            }
+
+            playTime = randomInt(5, 10);
+            break;
         }
 
         // Turnover Check
         // Fumble logic varies by play type
         let fumbleChance = era.rules.fumbleRate;
-        if (decision === PlayType.LATERAL) fumbleChance *= 1.5; // Pitch plays are riskier
-        
-        if (decision !== PlayType.PASS && roll(fumbleChance)) {
+        if (offPlay === PlayType.LATERAL) fumbleChance *= 1.5; // Pitch plays are riskier
+
+        if (offPlay !== PlayType.PASS && roll(fumbleChance)) {
              isTurnover = true;
              result.description = "FUMBLE! Turnover.";
-        } else if (decision === PlayType.PASS && roll(era.rules.interceptionRate)) {
+        } else if (offPlay === PlayType.PASS && roll(era.rules.interceptionRate)) {
              isTurnover = true;
              result.description = "INTERCEPTED!";
-        } else if (decision === PlayType.PASS && state.era === EraId.GENESIS && roll(0.6)) {
+        } else if (offPlay === PlayType.PASS && state.era === EraId.GENESIS && roll(0.6)) {
              // Incomplete pass in early era = penalty
              if (era.rules.incompletionPenalty) {
                  result.description = "Incomplete pass! 15 yard penalty.";
@@ -265,33 +371,37 @@ export const simulatePlay = (state: GameState, chosenPlay?: PlayType): { newStat
              }
         } else {
             // Successful Play Calculation
-            if (decision === PlayType.RUN) {
-                // Skewed towards 3-4 yards
-                yards = randomInt(-2, 12);
-                if (roll(0.05)) yards += randomInt(10, 40);
+            if (offPlay === PlayType.RUN) {
+                // Skewed towards 3-4 yards, apply defensive modifier
+                yards = randomInt(-2, 12) - runDefenseBonus;
+                // Big play chance modified by defense
+                if (roll(0.05 + bigPlayChance)) yards += randomInt(10, 40);
                 result.description = `Run for ${yards} yards.`;
-            } else if (decision === PlayType.LATERAL) {
-                // High Variance
+            } else if (offPlay === PlayType.LATERAL) {
+                // High Variance, apply run defense modifier
                 const outcome = Math.random();
                 if (outcome < 0.25) {
                     // Tackled in backfield
-                    yards = randomInt(-7, -2);
+                    yards = randomInt(-7, -2) - runDefenseBonus;
                     result.description = `Toss play stuffed for ${yards} yards.`;
                 } else if (outcome < 0.40) {
                      // Short gain / No gain
-                     yards = randomInt(-1, 2);
+                     yards = randomInt(-1, 2) - runDefenseBonus;
                      result.description = `Lateral goes for ${yards} yards.`;
                 } else {
                      // Outside seal
-                     yards = randomInt(5, 20);
-                     if (roll(0.15)) yards += randomInt(20, 50); // Big breakout chance
+                     yards = randomInt(5, 20) - runDefenseBonus;
+                     // Big breakout chance modified by defense
+                     if (roll(0.15 + bigPlayChance)) yards += randomInt(20, 50);
                      result.description = `Toss to the outside for ${yards} yards.`;
                 }
             } else {
-                // Pass logic
-                if (roll(0.60)) { // Completion rate
+                // Pass logic - apply defensive modifier to completion rate
+                const completionChance = 0.60 - passDefenseBonus;
+                if (roll(completionChance)) {
                     yards = randomInt(5, 20);
-                    if (roll(0.10)) yards += randomInt(20, 60); // Deep ball
+                    // Deep ball chance modified by defense
+                    if (roll(0.10 + bigPlayChance)) yards += randomInt(20, 60);
                     result.description = `Pass complete for ${yards} yards.`;
                 } else {
                     yards = 0;
@@ -327,7 +437,7 @@ export const simulatePlay = (state: GameState, chosenPlay?: PlayType): { newStat
             newState.distance -= yards;
             
             // Clock Logic for standard play
-            if (decision === PlayType.PASS) {
+            if (offPlay === PlayType.PASS) {
                 playTime = randomInt(25, 40);
             } else {
                 playTime = randomInt(30, 45); // Runs/Laterals take time
@@ -398,7 +508,7 @@ export const simulatePlay = (state: GameState, chosenPlay?: PlayType): { newStat
   }
 
   // Safety Check (Own Endzone)
-  if (newState.ballLocation <= 0 && !result.possessionChange && decision !== PlayType.KICKOFF) {
+  if (newState.ballLocation <= 0 && !result.possessionChange && offPlay !== PlayType.KICKOFF) {
       result.description += " SAFETY!";
       result.scoreChange = {
           team: newState.possession === 'home' ? 'away' : 'home',

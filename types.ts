@@ -51,8 +51,16 @@ export enum PlayType {
   KICKOFF = 'KICKOFF'
 }
 
+export enum DefensivePlayType {
+  STANDARD = 'STANDARD',
+  RUN_DEFENSE = 'RUN_DEFENSE', // Stuffs runs, weak to pass
+  PASS_DEFENSE = 'PASS_DEFENSE', // Stops deep passes, allows short runs
+  BLITZ = 'BLITZ', // High risk/reward: Sacks or Big Plays
+}
+
 export interface PlayResult {
   type: PlayType;
+  defensivePlay?: DefensivePlayType;
   yardsGained: number;
   description: string;
   scoreChange?: {

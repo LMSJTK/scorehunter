@@ -1,21 +1,23 @@
 import React from 'react';
-import { PlayType, EraId } from '../types';
+import { PlayType, DefensivePlayType, EraId } from '../types';
 import { ERAS } from '../constants';
 
 interface Props {
-  onSelectPlay: (type: PlayType) => void;
-  recommendedPlay: PlayType;
+  onSelectPlay: (type: PlayType | DefensivePlayType) => void;
+  recommendedPlay: PlayType | DefensivePlayType;
   era: EraId;
   disabled: boolean;
   possessionTeam: string;
+  isDefense: boolean;
 }
 
-const PlaybookSelector: React.FC<Props> = ({ 
-  onSelectPlay, 
-  recommendedPlay, 
-  era, 
+const PlaybookSelector: React.FC<Props> = ({
+  onSelectPlay,
+  recommendedPlay,
+  era,
   disabled,
-  possessionTeam
+  possessionTeam,
+  isDefense
 }) => {
   const eraConfig = ERAS[era];
 
@@ -44,7 +46,58 @@ const PlaybookSelector: React.FC<Props> = ({
       );
   }
 
-  // Normal Play Options
+  // Defensive Playbook
+  if (isDefense) {
+    const defPlays = [
+      { type: DefensivePlayType.STANDARD, label: 'Base Defense', desc: 'Balanced approach' },
+      { type: DefensivePlayType.RUN_DEFENSE, label: 'Stack Box', desc: 'Stops Run, weak to Pass' },
+      { type: DefensivePlayType.PASS_DEFENSE, label: 'Zone Coverage', desc: 'Stops Pass, weak to Run' },
+      { type: DefensivePlayType.BLITZ, label: 'All Out Blitz', desc: 'High Risk / High Reward' },
+    ];
+
+    return (
+      <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 shadow-xl border-t-4 border-t-red-500">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+            Defensive Strategy
+          </h3>
+          <div className="text-xs text-slate-400">
+            Opponent: <span className="text-emerald-500 font-bold">{possessionTeam}</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          {defPlays.map((play) => {
+            const isRec = recommendedPlay === play.type;
+            return (
+              <button
+                key={play.type}
+                onClick={() => onSelectPlay(play.type)}
+                disabled={disabled}
+                className={`
+                  relative overflow-hidden p-3 rounded-lg border-2 text-left transition-all
+                  ${isRec
+                    ? 'bg-red-900/40 border-red-500 shadow-[0_0_10px_rgba(239,68,68,0.3)]'
+                    : 'bg-slate-700 border-slate-600 hover:bg-slate-600'}
+                  ${disabled ? 'opacity-50 cursor-not-allowed' : 'active:scale-95'}
+                `}
+              >
+                {isRec && (
+                  <div className="absolute top-0 right-0 bg-red-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-bl">
+                    COACH
+                  </div>
+                )}
+                <div className="font-black text-sm text-slate-200">{play.label}</div>
+                <div className="text-[10px] text-slate-400">{play.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // Normal Offensive Play Options
   const plays = [
     { type: PlayType.RUN, label: 'Run Play', valid: true },
     { type: PlayType.LATERAL, label: 'Toss / Lateral', valid: true },
