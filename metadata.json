@@ -1,0 +1,5 @@
+{
+  "name": "ChronoGrid: Scoragami Simulator",
+  "description": "A deep-time football simulator that spans 150 years of gridiron evolution. Simulate games from the chaotic 1800s to the analytics era to discover unique 'Scoragami' scores.",
+  "requestFramePermissions": []
+}
